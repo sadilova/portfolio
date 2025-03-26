@@ -1,52 +1,51 @@
-import turtle
+from turtle import Screen
+from snake import Snake
+import time
+from food import Food
+from scoreboard import Scoreboard
 
-START = [(0, 0), (-20, 0), (-40, 0)]
-MOVE_DISTANCE = 20
-UP = 90
-DOWN = 270
-LEFT = 180
-RIGHT = 0
+screen = Screen()
+screen.setup(600, 600)
+screen.bgcolor("black")
+screen.title("Snake")
+screen.tracer(0)
 
+snake = Snake()
+food = Food()
+scoreboard = Scoreboard()
 
-class Snake:
-    def __init__(self):
-        self.all_segments = []
-        self.create_snake()
-        self.head = self.all_segments[0]
+START = 0
 
-    def create_snake(self):
-        for position in START:
-            self.add_segment(position)
+screen.listen()
+screen.onkey(snake.up, "Up")
+screen.onkey(snake.down, "Down")
+screen.onkey(snake.left, "Left")
+screen.onkey(snake.right, "Right")
 
-    def add_segment(self, position):
-        segment = turtle.Turtle("square")
-        segment.color("white")
-        segment.penup()
-        segment.goto(position)
-        self.all_segments.append(segment)
+game = True
+screen.update()
 
-    def grow_tail(self):
-        self.add_segment(self.all_segments[-1].position())
+while game:
+    time.sleep(0.1)
+    snake.move()
+    screen.update()
 
-    def move(self):
-        for seg_num in range((len(self.all_segments) - 1), 0, -1):
-            x_position = self.all_segments[seg_num - 1].xcor()
-            y_position = self.all_segments[seg_num - 1].ycor()
-            self.all_segments[seg_num].goto(x_position, y_position)
-        self.head.forward(MOVE_DISTANCE)
+    # Detect collision with wall
+    if snake.head.xcor() > 280 or snake.head.xcor() < -280 or snake.head.ycor() > 280 or snake.head.ycor() < -280:
+        game = False
+        scoreboard.game_over()
 
-    def up(self):
-        if self.head.heading() != DOWN:
-            self.head.setheading(UP)
+    # Detect collision with food
+    if snake.head.distance(food) < 10:
+        food.refresh()
+        scoreboard.increase_score()
+        snake.grow_tail()
+        screen.update()
 
-    def down(self):
-        if self.head.heading() != UP:
-            self.head.setheading(DOWN)
+    # Detect collision with tail
+    for seg in snake.all_segments[1:]:
+        if snake.head.distance(seg) < 10:
+            game = False
+            scoreboard.game_over()
 
-    def right(self):
-        if self.head.heading() != LEFT:
-            self.head.setheading(RIGHT)
-
-    def left(self):
-        if self.head.heading() != RIGHT:
-            self.head.setheading(LEFT)
+screen.exitonclick()
