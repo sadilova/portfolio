@@ -9,7 +9,7 @@ This analysis investigates the effect of sensor placement on spoilage detection 
 
 ## Files Included:
 - `pack_var_analysis.ipynb`: Jupyter notebook performing the analysis and visualizations.
-- `data/`: Folder containing the dataset.
+- `random_data_generation.py`: Python script with function for generating random data and correlated distance values.
 
 ## Key Results
 - Sensors closer to the food generally detect spoilage earlier.
