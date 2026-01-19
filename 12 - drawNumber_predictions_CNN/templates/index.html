@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Draw Digits</title>
+<style>
+body { font-family: Arial; text-align: center; margin-top: 30px; }
+canvas { border: 2px solid black; cursor: crosshair; }
+input { width: 30px; font-size: 18px; text-align: center; }
+button { font-size: 16px; margin: 5px; }
+#prediction { font-size: 24px; margin-top: 15px; font-weight: bold; }
+</style>
+</head>
+<body>
+<h2>Draw your digit</h2>
+<canvas id="canvas" width="280" height="280"></canvas>
+<br><br>
+<label>Actual Number:</label>
+<input type="text" id="digit" maxlength="1">
+<br><br>
+<button id="doneBtn">Done</button>
+<button id="clearBtn">Clear</button>
+
+<div id="prediction">Predicted digit: </div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+ctx.fillStyle='white'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+let drawing=false, lastX=0, lastY=0;
+
+canvas.addEventListener('mousedown', e => {
+    drawing=true;
+    const rect=canvas.getBoundingClientRect();
+    lastX=e.clientX-rect.left;
+    lastY=e.clientY-rect.top;
+});
+canvas.addEventListener('mouseup',()=>drawing=false);
+canvas.addEventListener('mouseleave',()=>drawing=false);
+
+canvas.addEventListener('mousemove', e=>{
+    if(!drawing) return;
+    const rect=canvas.getBoundingClientRect();
+    const x=e.clientX-rect.left;
+    const y=e.clientY-rect.top;
+    ctx.strokeStyle='black'; ctx.lineWidth=15; ctx.lineCap='round';
+    ctx.beginPath();
+    ctx.moveTo(lastX,lastY);
+    ctx.lineTo(x,y);
+    ctx.stroke();
+    lastX=x; lastY=y;
+});
+
+// Function to convert canvas to 28x28 PNG
+function getImageDataURL() {
+    const temp = document.createElement('canvas'); 
+    temp.width=28; temp.height=28;
+    const tctx = temp.getContext('2d'); 
+    tctx.fillStyle='white'; tctx.fillRect(0,0,28,28);
+    tctx.drawImage(canvas,0,0,28,28);
+    return temp.toDataURL('image/png');
+}
+
+setInterval(async () => {
+    const res = await fetch('/count');
+    const data = await res.json();
+    document.getElementById('datasetCounter').innerText = `Images saved: ${data.count}`;
+}, 2000); // every 2 seconds
+
+// Done button: save + predict + retrain
+document.getElementById('doneBtn').addEventListener('click', async ()=>{
+    const label = document.getElementById('digit').value;
+    if(!label.match(/^[0-9]$/)){ alert('Enter a digit 0-9'); return; }
+
+    const dataURL = getImageDataURL();
+    const response = await fetch('/done', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({image:dataURL,label:label})
+    });
+    const result = await response.json();
+
+    // Show prediction on the page
+    document.getElementById('prediction').innerText = `Predicted digit: ${result.prediction}`;
+
+    // Do NOT clear canvas automatically
+    // ctx.fillStyle='white'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    document.getElementById('digit').value='';
+});
+
+// Clear button
+document.getElementById('clearBtn').addEventListener('click', ()=>{
+    ctx.fillStyle='white'; 
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    document.getElementById('prediction').innerText = 'Predicted digit: ';
+});
+</script>
+</body>
+</html>
