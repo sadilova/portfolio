@@ -1,133 +1,101 @@
 #!/bin/bash
-export FSLDIR=$HOME/fsl
-source $FSLDIR/etc/fslconf/fsl.sh
-export PATH=$FSLDIR/bin:$PATH
+# ============================================================
+# AS3_unwarping.sh
+# GRE fieldmap-based EPI unwarping using FSL.
+# Expects env vars: SUB, RUN_NAME, mc_file, BOLD_JSON,
+#                   PREPROC_DIR, FMAP_DIR
+# ============================================================
 
 extDIR=$(cat 1_directory.txt)
 
-# SUB is exported from the wrapper
-if [ -z "${SUB}" ]; then
-    echo "ERROR: SUB not defined. Please export SUB from the wrapper."
-    exit 1
+if [ -z "${SUB}" ];         then echo "ERROR: SUB not defined.";         exit 1; fi
+if [ -z "${mc_file}" ];     then echo "ERROR: mc_file not defined.";     exit 1; fi
+if [ -z "${PREPROC_DIR}" ]; then echo "ERROR: PREPROC_DIR not defined."; exit 1; fi
+if [ -z "${FMAP_DIR}" ] || [ ! -d "${FMAP_DIR}" ]; then
+    echo "ERROR: FMAP_DIR not set or does not exist: ${FMAP_DIR}"; exit 1
 fi
 
-OUTDIR="${extDIR}derivatives/${SUB}/preproc/mc/"
-DIR="${extDIR}${SUB}/fmap/"
-EPI_DIR="${extDIR}${SUB}/func/"
-MAG=$(find ${DIR} -name "*e1.nii.gz" | head -1)
-MAG2=$(find ${DIR} -name "*e2.nii.gz" | head -1)
-PHASE=$(find ${DIR} -name "*ph.nii.gz" | head -1)
+echo "  Using fmap directory: ${FMAP_DIR}"
 
-EPI="${OUTDIR}${mc_file}_mcf.nii.gz"
-EPI_MEAN=${OUTDIR}mean_epi_fmap.nii.gz
-fslmaths ${EPI} -Tmean ${EPI_MEAN}
+MC_DIR="${PREPROC_DIR}/mc/"
+FMAP_OUT="${PREPROC_DIR}/fmap/"
+FIACH_DIR="${PREPROC_DIR}/FIACH/"
+mkdir -p "${FMAP_OUT}"
 
-FMAP1_JSON=$(find ${DIR} -name "*e1*.json" | head -1)
-FMAP2_JSON=$(find ${DIR} -name "*e2*.json" | head -1)
-EPI_JSON=$(find ${EPI_DIR} -name "*bold*.json" | head -1)
+# --- Find fieldmap files ---
+MAGN=$(ls "${FMAP_DIR}"*_e1.nii.gz 2>/dev/null | head -n 1)
+PHASE=$(ls "${FMAP_DIR}"*_e2_ph.nii.gz 2>/dev/null | head -n 1)
 
-DTE=$(python3 -c "
-import json
-with open('${FMAP1_JSON}') as f:
-    d = json.load(f)
-te1 = d['EchoTime']
-with open('${FMAP2_JSON}') as f:
-    d = json.load(f)
-te2 = d['EchoTime']
-print(round(te2 - te1, 5))
-")
+if [ -z "${MAGN}" ];  then echo "ERROR: No magnitude (*_e1.nii.gz) in ${FMAP_DIR}";    exit 1; fi
+if [ -z "${PHASE}" ]; then echo "ERROR: No phase diff (*_e2_ph.nii.gz) in ${FMAP_DIR}"; exit 1; fi
 
-DWELL=$(python3 -c "
-import json
-with open('${EPI_JSON}') as f:
-    d = json.load(f)
-print(d['EffectiveEchoSpacing'])
-")
+echo "  Magnitude : ${MAGN}"
+echo "  Phase diff: ${PHASE}"
 
-READOUT=$(python3 -c "
-import json
-with open('${EPI_JSON}') as f:
-    d = json.load(f)
-print(d['TotalReadoutTime'])
-")
-
-PE_DIR=$(python3 -c "
-import json
-with open('${EPI_JSON}') as f:
-    d = json.load(f)
-print(d['PhaseEncodingDirection'])
-")
-
-if [ "${PE_DIR}" == "j-" ]; then
-    FSL_PE_DIR="y-"
-elif [ "${PE_DIR}" == "j" ]; then
-    FSL_PE_DIR="y"
-elif [ "${PE_DIR}" == "i-" ]; then
-    FSL_PE_DIR="x-"
-elif [ "${PE_DIR}" == "i" ]; then
-    FSL_PE_DIR="x"
+# --- Read dTE from JSON ---
+dTE=""
+FMAP_JSON=$(ls "${FMAP_DIR}"*.json 2>/dev/null | head -n 1)
+if [ -n "${FMAP_JSON}" ]; then
+    TE1=$(jq -r '.EchoTime1 // empty' "${FMAP_JSON}" 2>/dev/null)
+    TE2=$(jq -r '.EchoTime2 // empty' "${FMAP_JSON}" 2>/dev/null)
+    if [ -n "${TE1}" ] && [ -n "${TE2}" ]; then
+        dTE=$(echo "scale=4; (${TE2} - ${TE1}) * 1000" | bc)
+        echo "  dTE from fmap JSON: ${dTE} ms"
+    fi
+fi
+if [ -z "${dTE}" ]; then
+    MAGN_JSON="${MAGN%.nii.gz}.json"
+    if [ -f "${MAGN_JSON}" ]; then
+        dTE_s=$(jq -r '.EchoTimeDifference // empty' "${MAGN_JSON}" 2>/dev/null)
+        if [ -n "${dTE_s}" ]; then
+            dTE=$(echo "scale=4; ${dTE_s} * 1000" | bc)
+            echo "  dTE from magnitude JSON: ${dTE} ms"
+        fi
+    fi
+fi
+if [ -z "${dTE}" ]; then
+    dTE=2.46
+    echo "  WARNING: Could not read dTE — using default ${dTE} ms"
 fi
 
-echo "dTE: ${DTE}"
-echo "Dwell: ${DWELL}"
-echo "Readout: ${READOUT}"
-echo "PE dir: ${PE_DIR}"
-echo "FSL PE dir: ${FSL_PE_DIR}"
+# --- Brain extract magnitude ---
+echo "  Brain extracting magnitude..."
+MAGN_BRAIN="${FMAP_OUT}magnitude_brain"
+bet "${MAGN}" "${MAGN_BRAIN}" -f 0.5 -g 0 -m
 
-# 1. Average magnitude, brain extract
-echo 'Average magnitude, brain extract...'
-fslmaths ${MAG} -add ${MAG2} -div 2 ${OUTDIR}mag_avg.nii.gz
-bet ${OUTDIR}mag_avg.nii.gz ${OUTDIR}mag_brain.nii.gz -f 0.4 -m
-fslmaths ${OUTDIR}mag_brain.nii.gz -bin ${OUTDIR}mag_mask.nii.gz
+# --- Prepare fieldmap ---
+echo "  Preparing fieldmap (dTE=${dTE} ms)..."
+FIELDMAP="${FMAP_OUT}fieldmap_rads"
+fsl_prepare_fieldmap SIEMENS "${PHASE}" "${MAGN_BRAIN}" "${FIELDMAP}" "${dTE}"
 
-# 2. Rescale phase to radians, unwrap
-echo 'Rescaling to radians...'
-fslmaths ${PHASE} -mul 0.000766990393 ${OUTDIR}phase_rad.nii.gz
-prelude -a ${OUTDIR}mag_brain.nii.gz \
-        -p ${OUTDIR}phase_rad.nii.gz \
-        -m ${OUTDIR}mag_mask.nii.gz \
-        -o ${OUTDIR}phase_unwrapped.nii.gz -v
+# --- Read EPI params ---
+EPI_TE=""
+DWELL_TIME=""
+if [ -n "${BOLD_JSON}" ] && [ -f "${BOLD_JSON}" ]; then
+    EPI_TE=$(jq -r '.EchoTime // empty'                               "${BOLD_JSON}" 2>/dev/null)
+    DWELL_TIME=$(jq -r '.DwellTime // .EffectiveEchoSpacing // empty' "${BOLD_JSON}" 2>/dev/null)
+fi
+if [ -z "${EPI_TE}" ];    then EPI_TE=0.024;    echo "  WARNING: Using default EPI TE=${EPI_TE}s"; fi
+if [ -z "${DWELL_TIME}" ]; then DWELL_TIME=0.000395; echo "  WARNING: Using default dwell=${DWELL_TIME}s"; fi
 
-# 3. Phase (rad) to rad/s
-fslmaths ${OUTDIR}phase_unwrapped.nii.gz \
-    -div ${DTE} \
-    ${OUTDIR}fieldmap_rads.nii.gz
+# --- Unwarp ---
+INPUT_EPI="${MC_DIR}${mc_file}_mcf.nii.gz"
+OUTPUT_EPI="${MC_DIR}${mc_file}_mcf_unwarp.nii.gz"
+if [ ! -f "${INPUT_EPI}" ]; then echo "ERROR: EPI not found: ${INPUT_EPI}"; exit 1; fi
 
-# 4. Smooth and mask
-echo 'Smoothing and masking of B0...'
-fugue --loadfmap=${OUTDIR}fieldmap_rads.nii.gz \
-      --mask=${OUTDIR}mag_mask.nii.gz \
-      --savefmap=${OUTDIR}fieldmap_rads_smooth.nii.gz \
-      --smooth3=2
+echo "  Unwarping EPI..."
+fugue -i "${INPUT_EPI}" \
+      --loadfmap="${FIELDMAP}" \
+      --dwell="${DWELL_TIME}" \
+      --unwarpdir=y- \
+      -u "${OUTPUT_EPI}"
 
-# 5. Register fieldmap to EPI
-echo 'Registering B0 to EPI...'
-flirt -in ${OUTDIR}mag_brain.nii.gz \
-      -ref ${EPI_MEAN} \
-      -out ${OUTDIR}mag2epi.nii.gz \
-      -omat ${OUTDIR}mag2epi.mat \
-      -dof 6 \
-      -cost corratio
+echo "  Unwarped EPI saved: ${OUTPUT_EPI}"
 
-flirt -in ${OUTDIR}fieldmap_rads_smooth.nii.gz \
-      -ref ${EPI_MEAN} \
-      -out ${OUTDIR}fieldmap_rads_epi.nii.gz \
-      -init ${OUTDIR}mag2epi.mat \
-      -applyxfm
-
-# 6. Apply unwarping
-echo 'Applying unwarping...'
-fugue -i ${EPI} \
-      --dwell=${DWELL} \
-      --loadfmap=${OUTDIR}fieldmap_rads_epi.nii.gz \
-      --unwarpdir=${FSL_PE_DIR} \
-      -u ${OUTDIR}${mc_file}_mcf_unwarp.nii.gz
-
-echo "Done — unwarped EPI: ${OUTDIR}${mc_file}_mcf_unwarp.nii.gz"
-
-echo 'Create meanFunc from unwarped EPI...'
-EPI_MEAN_UN=${OUTDIR}meanFunctional.nii.gz
-fslmaths ${OUTDIR}${mc_file}_mcf_unwarp.nii.gz -Tmean ${EPI_MEAN_UN}
-
-gunzip -c ${OUTDIR}meanFunctional.nii.gz > ${extDIR}derivatives/${SUB}/preproc/FIACH/meanFunctional.nii
-echo 'Step 3 complete'
+# --- Compute mean functional ---
+MEAN_OUT="${MC_DIR}meanFunctional_${RUN_NAME}.nii.gz"
+fslmaths "${OUTPUT_EPI}" -Tmean "${MEAN_OUT}"
+gunzip -c "${MEAN_OUT}"       > "${FIACH_DIR}meanFunctional_${RUN_NAME}.nii"
+gunzip -c "${OUTPUT_EPI}"     > "${FIACH_DIR}${mc_file}_mcf_unwarp.nii"
+echo "  Mean functional saved: ${MEAN_OUT}"
+echo "  Unwarping complete for ${SUB} / ${RUN_NAME}"

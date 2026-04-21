@@ -1,73 +1,39 @@
 #!/bin/bash
-# ============================================================
-# AS6_call_FIACH.sh
-# Calls FIACH for a single run. Called from wrapper_preprocess.sh.
-# Expects env vars: SUB, RUN_LABEL, fiach_file, mc_file, BOLD_JSON
-# ============================================================
-
 HPF=false
 REGRESS=false
 
 extDIR=$(cat 1_directory.txt)
-DIR=${extDIR}derivatives/${SUB}/preproc/
 sDIR="$(dirname $(realpath $0))/"
 
-if [ -z "${SUB}" ]; then
-    echo "ERROR: SUB not defined. Please export SUB from the wrapper."
-    exit 1
-fi
-
-if [ -z "${fiach_file}" ]; then
-    echo "ERROR: fiach_file not defined. Please export from the wrapper."
-    exit 1
-fi
-
-if [ -z "${mc_file}" ]; then
-    echo "ERROR: mc_file not defined. Please export from the wrapper."
-    exit 1
-fi
+if [ -z "${SUB}" ];         then echo "ERROR: SUB not defined.";         exit 1; fi
+if [ -z "${fiach_file}" ];  then echo "ERROR: fiach_file not defined.";  exit 1; fi
+if [ -z "${PREPROC_DIR}" ]; then echo "ERROR: PREPROC_DIR not defined."; exit 1; fi
 
 # --- Resolve JSON sidecar ---
-# BOLD_JSON is set by the wrapper to exactly match the current run's sidecar.
-# Fallback: try to find one in the func folder (warns if ambiguous).
 if [ -n "${BOLD_JSON}" ] && [ -f "${BOLD_JSON}" ]; then
     JSON="${BOLD_JSON}"
 else
-    echo "WARNING: BOLD_JSON not set or not found, falling back to glob (may be ambiguous)"
+    echo "WARNING: BOLD_JSON not set, falling back to glob (may be ambiguous)"
     JSON=$(ls ${extDIR}${SUB}/func/*bold.json 2>/dev/null | head -n 1)
     if [ -z "${JSON}" ]; then
-        echo "ERROR: No bold.json sidecar found for ${SUB} run ${RUN_LABEL}"
+        echo "ERROR: No bold.json sidecar found for ${SUB}"
         exit 1
     fi
 fi
 echo "Using JSON: ${JSON}"
 
-# --- Read scan parameters ---
 TR=$(jq -r '.RepetitionTime' "${JSON}")
 TE=$(jq -r '.EchoTime'       "${JSON}")
+if [ "${TR}" = "null" ] || [ -z "${TR}" ]; then echo "ERROR: No RepetitionTime in ${JSON}"; exit 1; fi
+if [ "${TE}" = "null" ] || [ -z "${TE}" ]; then echo "ERROR: No EchoTime in ${JSON}";       exit 1; fi
 
-if [ "${TR}" = "null" ] || [ -z "${TR}" ]; then
-    echo "ERROR: No RepetitionTime found in ${JSON}"
-    exit 1
-fi
-if [ "${TE}" = "null" ] || [ -z "${TE}" ]; then
-    echo "ERROR: No EchoTime found in ${JSON}"
-    exit 1
-fi
-
-echo "TR: ${TR}s"
-echo "TE: ${TE}s"
-
-# B0 is scanner-specific; not usually in JSON
+echo "TR: ${TR}s  TE: ${TE}s"
 B0=7
 
-# --- Copy FIACH script into working dir ---
-cp ${sDIR}run_fiach_DC.m ${extDIR}derivatives/${SUB}/preproc/FIACH/run_fiach.m
+cp ${sDIR}run_fiach_DC.m ${PREPROC_DIR}/FIACH/run_fiach.m
 
-# --- Write MATLAB commands to a temp script and run it ---
-# Using a .m file avoids multiline -batch string issues.
-FIACH_DIR="${DIR}FIACH"
-TMP_M="${FIACH_DIR}/run_fiach_call_${RUN_LABEL}.m"
+FIACH_DIR="${PREPROC_DIR}/FIACH"
+TMP_M="${FIACH_DIR}/run_fiach_call_${RUN_NAME}.m"
 
 cat > "${TMP_M}" << MATLAB_EOF
 clear; clc;
@@ -94,5 +60,4 @@ if [ ${MATLAB_EXIT} -ne 0 ]; then
     exit 1
 fi
 
-# Clean up temp script on success
 rm -f "${TMP_M}"

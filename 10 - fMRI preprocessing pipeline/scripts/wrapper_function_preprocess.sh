@@ -25,7 +25,7 @@ TARGET_RUN=""
 # RESTART_FROM_STEP=1  → clear all checkpoints, rerun everything from scratch
 #
 # Step reference:
-#   1  NORDIC (commented out)    7  Combine regressors
+#   1  NORDIC                    7  Combine regressors
 #   2  Motion correction         8  Co-registration
 #   3  Unwarping / mean func     9  Normalisation (8b)
 #   4  Slice timing             10  Smoothing
@@ -95,11 +95,6 @@ find_bold_files() {
 #     Line 1 — CAP_NAME : subfolder name (e.g. "cap1"), or "" if directly in func/
 #     Line 2 — RUN_NAME : file base stripped of _bold suffix and any leading sub-XX_
 #                         prefix, so sub-XX never appears twice in output filenames.
-#   Examples:
-#     func/run1_bold.nii.gz              -> CAP="",     RUN="run1"
-#     func/sub-02_run-1_bold.nii.gz      -> CAP="",     RUN="run-1"
-#     func/cap1/run1_bold.nii.gz         -> CAP="cap1", RUN="run1"
-#     func/cap1/sub-02_run-1_bold.nii.gz -> CAP="cap1", RUN="run-1"
 # ============================================================
 derive_run_info() {
     local func_dir="${1}"
@@ -109,15 +104,15 @@ derive_run_info() {
     local cap_name="" run_file="" run_name=""
 
     if [[ "$rel" == */* ]]; then
-        cap_name="${rel%%/*}"       # everything before first /  e.g. "cap1"
-        run_file="${rel#*/}"        # everything after first /   e.g. "run1_bold.nii.gz"
+        cap_name="${rel%%/*}"
+        run_file="${rel#*/}"
     else
         run_file="$rel"
     fi
 
-    run_name=$(basename "${run_file}" .nii.gz)           # strip .nii.gz
-    run_name="${run_name%_bold}"                          # strip _bold suffix
-    run_name=$(echo "${run_name}" | sed 's/^sub-[^_]*_//')  # strip leading sub-XX_
+    run_name=$(basename "${run_file}" .nii.gz)
+    run_name="${run_name%_bold}"
+    run_name=$(echo "${run_name}" | sed 's/^sub-[^_]*_//')
 
     printf '%s\n%s\n' "${cap_name}" "${run_name}"
 }
@@ -125,12 +120,9 @@ derive_run_info() {
 
 # ============================================================
 # Checkpoint helpers
+#   Checkpoints are keyed by RUN_LABEL (which includes cap prefix,
+#   e.g. "cap1_run1") so cap1 and cap2 never share checkpoints.
 #   Files: derivatives/SUB/preproc/checkpoints/RUN_LABEL/stepN.done
-#
-#   step_done N   — returns true if checkpoint file exists
-#   mark_done N   — create checkpoint (call only on success via &&)
-#   clear_from N  — delete checkpoints N..11 so those steps rerun
-#   run_or_die N label cmd... — run cmd; mark done on success, exit on failure
 # ============================================================
 _ckpt_dir() {
     echo "${DIR}derivatives/${SUB}/preproc/checkpoints/${RUN_LABEL}"
@@ -238,16 +230,74 @@ for SUB in "${SUBS[@]}"; do
         fi
 
         # -------------------------------------------------------
+        # Derive PREPROC_DIR (cap-aware) and T1_DIR (always subject-level)
+        #   No cap → preproc/
+        #   cap1   → preproc/cap1/
+        # T1 is shared across caps so always lives at preproc/T1/
+        # -------------------------------------------------------
+        if [[ -n "$CAP_NAME" ]]; then
+            PREPROC_DIR="${DIR}derivatives/${SUB}/preproc/${CAP_NAME}"
+        else
+            PREPROC_DIR="${DIR}derivatives/${SUB}/preproc"
+        fi
+        T1_DIR="${DIR}derivatives/${SUB}/preproc/T1"
+        export PREPROC_DIR T1_DIR
+
+        # Create all cap-specific subfolders for this run
+        mkdir -p "${PREPROC_DIR}/mc" \
+                 "${PREPROC_DIR}/NORDIC" \
+                 "${PREPROC_DIR}/FIACH" \
+                 "${PREPROC_DIR}/fmap" \
+                 "${PREPROC_DIR}/reg" \
+                 "${PREPROC_DIR}/smooth" \
+                 "${PREPROC_DIR}/tsnr" \
+                 "${PREPROC_DIR}/slicecor" \
+                 "${T1_DIR}"
+
+        echo "  Preproc dir: ${PREPROC_DIR}"
+
+        # --- Resolve fmap directory for this run ---
+        # Mirrors func folder structure:
+        #   func/cap1/run1 → fmap/cap1/   (cap-specific)
+        #   func/cap1/run1 → fmap/         (fallback: flat fmap applies to all caps)
+        #   func/run1      → fmap/         (no cap subfolders)
+        # If the expected fmap folder doesn't exist → skip unwarping
+        FMAP_DIR=""
+        FMAP_HAS_CAPS=$(find "${DIR}${SUB}/fmap" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)
+
+        if [[ -n "$CAP_NAME" ]]; then
+            if [ -d "${DIR}${SUB}/fmap/${CAP_NAME}/" ]; then
+                # Cap-specific fmap subfolder exists
+                FMAP_DIR="${DIR}${SUB}/fmap/${CAP_NAME}/"
+                echo "  fmap: fmap/${CAP_NAME}/"
+            elif [ -z "${FMAP_HAS_CAPS}" ] && [ -d "${DIR}${SUB}/fmap/" ]; then
+                # fmap has no subfolders — use it for all caps
+                FMAP_DIR="${DIR}${SUB}/fmap/"
+                echo "  fmap: fmap/ (shared, no cap subfolders in fmap)"
+            else
+                echo "  fmap: fmap/${CAP_NAME}/ not found — skipping unwarping for ${RUN_LABEL}"
+            fi
+        else
+            if [ -d "${DIR}${SUB}/fmap/" ]; then
+                FMAP_DIR="${DIR}${SUB}/fmap/"
+                echo "  fmap: fmap/"
+            else
+                echo "  fmap: none found — skipping unwarping"
+            fi
+        fi
+        export FMAP_DIR
+
+        # -------------------------------------------------------
         # Pre-compute all pipeline filenames upfront.
         # Deterministic from flags — set once, valid for all steps.
         # -------------------------------------------------------
         if [ "$run_NORDIC" = true ]; then
-            mc_file=NORDIC_Run_BOLD_${SUB}_${RUN_LABEL}
+            mc_file=NORDIC_Run_BOLD_${SUB}_${RUN_NAME}
         else
-            mc_file=Run_BOLD_${SUB}_${RUN_LABEL}
+            mc_file=Run_BOLD_${SUB}_${RUN_NAME}
         fi
 
-        if [ -d "${DIR}${SUB}/fmap/" ]; then
+        if [ -n "${FMAP_DIR}" ]; then
             sc_file=${mc_file}_mcf_unwarp
         else
             sc_file=${mc_file}_mcf
@@ -279,18 +329,18 @@ for SUB in "${SUBS[@]}"; do
         if step_done 1; then
             echo "  Step 1: NORDIC/copy [SKIP]"
         else
-            NORDIC_DIR="${DIR}derivatives/${SUB}/preproc/NORDIC"
-            BOLD_COPY="${NORDIC_DIR}/Run_BOLD_${SUB}_${RUN_LABEL}.nii"
+            NORDIC_DIR="${PREPROC_DIR}/NORDIC"
+            BOLD_COPY="${NORDIC_DIR}/Run_BOLD_${SUB}_${RUN_NAME}.nii"
             echo "  Step 1: Copying bold to NORDIC folder..."
             gunzip -c "${BOLD_SRC}" > "${BOLD_COPY}" \
                 || { echo "  ERROR: Step 1 — failed to copy bold"; exit 1; }
 
             if [ "$run_NORDIC" = true ]; then
                 echo "  Step 1: Running NORDIC..."
-                TMP_M="${NORDIC_DIR}/run_nordic_${RUN_LABEL}.m"
+                TMP_M="${NORDIC_DIR}/run_nordic_${RUN_NAME}.m"
                 cat > "${TMP_M}" << MATLAB_EOF
 cd('${sDIR}');
-AS1_NIFTI_NORDIC('${DIR}', '${SUB}', '${RUN_LABEL}');
+AS1_NIFTI_NORDIC('${DIR}', '${SUB}', '${RUN_NAME}', '${PREPROC_DIR}');
 MATLAB_EOF
                 run_or_die 1 "NORDIC" bash -c \
                     "matlab -nosplash -batch \"run('${TMP_M}');\" && rm -f '${TMP_M}'"
@@ -310,8 +360,7 @@ MATLAB_EOF
             run_or_die 2 "Motion correction" \
                 bash ${sDIR}AS2_realign_mcflirt_fsl.sh
             # Verify output was actually created (AS2 can exit 0 on mcflirt failure)
-            OUTDIR="${DIR}derivatives/${SUB}/preproc/mc/"
-            if [[ ! -f "${OUTDIR}${mc_file}_mcf.nii.gz" ]]; then
+            if [[ ! -f "${PREPROC_DIR}/mc/${mc_file}_mcf.nii.gz" ]]; then
                 echo "  ERROR: Step 2 — mcf output missing despite exit 0. Check AS2 logs."
                 echo "         Rerun with RESTART_FROM_STEP=2"
                 rm -f "$(_ckpt_dir)/step_2.done"
@@ -325,20 +374,19 @@ MATLAB_EOF
         if step_done 3; then
             echo "  Step 3: Unwarping/mean func [SKIP]"
         else
-            OUTDIR="${DIR}derivatives/${SUB}/preproc/mc/"
-            if [ -d "${DIR}${SUB}/fmap/" ]; then
-                echo "  Step 3: Unwarping..."
+            if [ -n "${FMAP_DIR}" ]; then
+                echo "  Step 3: Unwarping (fmap: ${FMAP_DIR})..."
                 run_or_die 3 "Unwarping" \
                     bash ${sDIR}AS3_unwarping.sh
             else
                 echo "  Step 3: No fmap — computing mean functional..."
                 run_or_die 3 "Mean functional" bash -c "
-                    fslmaths ${OUTDIR}${mc_file}_mcf.nii.gz \
-                              -Tmean ${OUTDIR}meanFunctional_${RUN_LABEL}.nii.gz \
-                    && gunzip -c ${OUTDIR}meanFunctional_${RUN_LABEL}.nii.gz \
-                             > ${DIR}derivatives/${SUB}/preproc/FIACH/meanFunctional_${RUN_LABEL}.nii \
-                    && gunzip -c ${OUTDIR}${mc_file}_mcf.nii.gz \
-                             > ${DIR}derivatives/${SUB}/preproc/FIACH/${mc_file}_mcf.nii
+                    fslmaths ${PREPROC_DIR}/mc/${mc_file}_mcf.nii.gz \
+                              -Tmean ${PREPROC_DIR}/mc/meanFunctional_${RUN_NAME}.nii.gz \
+                    && gunzip -c ${PREPROC_DIR}/mc/meanFunctional_${RUN_NAME}.nii.gz \
+                             > ${PREPROC_DIR}/FIACH/meanFunctional_${RUN_NAME}.nii \
+                    && gunzip -c ${PREPROC_DIR}/mc/${mc_file}_mcf.nii.gz \
+                             > ${PREPROC_DIR}/FIACH/${mc_file}_mcf.nii
                 "
             fi
         fi
@@ -361,6 +409,8 @@ MATLAB_EOF
 
         # -------------------------------------------------------
         # STEP 5: Brain mask (T1)
+        # T1 is shared across caps — skip extraction if already done,
+        # but always re-register mask to EPI space for this run.
         # -------------------------------------------------------
         if step_done 5; then
             echo "  Step 5: Brain mask [SKIP]"
@@ -372,8 +422,7 @@ MATLAB_EOF
             fi
             echo "  Step 5: Brain mask..."
             run_or_die 5 "Brain mask" bash -c "
-                gunzip -c '${T1_SRC}' \
-                    > ${DIR}derivatives/${SUB}/preproc/FIACH/UNI_T1.nii \
+                gunzip -c '${T1_SRC}' > '${T1_DIR}/UNI_T1.nii' \
                 && python3 ${sDIR}AS5_maskbrain_ants.py
             "
         fi
@@ -388,7 +437,6 @@ MATLAB_EOF
             else
                 echo "  Step 6: FIACH..."
 
-                # Resolve run-specific JSON (same path/basename as BOLD_SRC, .json extension)
                 BOLD_JSON="${BOLD_SRC%.nii.gz}.json"
                 if [[ ! -f "$BOLD_JSON" ]]; then
                     echo "  ERROR: No JSON sidecar found at ${BOLD_JSON}"
@@ -396,19 +444,18 @@ MATLAB_EOF
                 fi
                 export BOLD_JSON
 
-                MEAN_SRC="${DIR}derivatives/${SUB}/preproc/mc/meanFunctional_${RUN_LABEL}.nii.gz"
+                MEAN_SRC="${PREPROC_DIR}/mc/meanFunctional_${RUN_NAME}.nii.gz"
                 [[ ! -f "$MEAN_SRC" ]] && \
-                    MEAN_SRC="${DIR}derivatives/${SUB}/preproc/mc/meanFunctional.nii.gz"
+                    MEAN_SRC="${PREPROC_DIR}/mc/meanFunctional.nii.gz"
                 run_or_die 6 "FIACH" bash -c "
                     gunzip -c '${MEAN_SRC}' \
-                        > ${DIR}derivatives/${SUB}/preproc/FIACH/meanFunctional.nii \
+                        > ${PREPROC_DIR}/FIACH/meanFunctional.nii \
                     && bash ${sDIR}AS6_call_FIACH.sh
                 "
 
-                # Verify rclean was actually produced — MATLAB can exit 0 silently on error
-                RCLEAN="${DIR}derivatives/${SUB}/preproc/FIACH/rclean_${fiach_file}.nii"
+                RCLEAN="${PREPROC_DIR}/FIACH/rclean_${fiach_file}.nii"
                 if [[ ! -f "$RCLEAN" ]]; then
-                    echo "  ERROR: Step 6 — FIACH ran but rclean_${fiach_file}.nii was not produced."
+                    echo "  ERROR: Step 6 — rclean_${fiach_file}.nii not produced."
                     echo "         Check MATLAB output above. Rerun with RESTART_FROM_STEP=6"
                     rm -f "$(_ckpt_dir)/step_6.done"
                     exit 1
@@ -419,9 +466,7 @@ MATLAB_EOF
                 echo "  Step 7: Combine regressors [SKIP]"
             else
                 echo "  Step 7: Combine motion + FIACH regressors..."
-                # mcflirt always writes <mc_file>_mcf.par — export explicitly so AS7
-                # doesn't have to derive it (and end up with sc prefix or double _mcf)
-                MOTION_PAR="${DIR}derivatives/${SUB}/preproc/mc/${mc_file}_mcf.par"
+                MOTION_PAR="${PREPROC_DIR}/mc/${mc_file}_mcf.par"
                 export MOTION_PAR
                 run_or_die 7 "Combine regressors" \
                     bash ${sDIR}AS7_combine_motion_regs_NORfi.sh
@@ -476,7 +521,7 @@ MATLAB_EOF
                 bash ${sDIR}AS10_tsnr_maps.sh
         fi
 
-        # --- Export pipeline variables for downstream QC ---
+        # --- Export pipeline variables on run completion ---
         ENV_FILE="${DIR}derivatives/${SUB}/stats/pipeline_vars_${RUN_LABEL}.env"
         {
             echo "SUB=${SUB}"
@@ -485,6 +530,9 @@ MATLAB_EOF
             echo "RUN_NAME=${RUN_NAME}"
             echo "RUN_LABEL=${RUN_LABEL}"
             echo "BOLD_SRC=${BOLD_SRC}"
+            echo "FMAP_DIR=${FMAP_DIR}"
+            echo "PREPROC_DIR=${PREPROC_DIR}"
+            echo "T1_DIR=${T1_DIR}"
             echo "mc_file=${mc_file}"
             echo "sc_file=${sc_file}"
             echo "fiach_file=${fiach_file}"
