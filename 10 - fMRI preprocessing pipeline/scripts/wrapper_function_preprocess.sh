@@ -323,6 +323,16 @@ for SUB in "${SUBS[@]}"; do
 
         export mc_file sc_file fiach_file reg_file smooth_file
 
+        # --- Resolve JSON sidecar early so all steps can use it ---
+        BOLD_JSON="${BOLD_SRC%.nii.gz}.json"
+        if [[ ! -f "$BOLD_JSON" ]]; then
+            echo "  WARNING: No JSON sidecar found at ${BOLD_JSON} — scan params will use defaults"
+            BOLD_JSON=""
+        else
+            echo "  JSON: ${BOLD_JSON}"
+        fi
+        export BOLD_JSON
+
         # -------------------------------------------------------
         # STEP 1: Copy bold to NORDIC folder; apply NORDIC if enabled
         # -------------------------------------------------------
@@ -437,12 +447,10 @@ MATLAB_EOF
             else
                 echo "  Step 6: FIACH..."
 
-                BOLD_JSON="${BOLD_SRC%.nii.gz}.json"
-                if [[ ! -f "$BOLD_JSON" ]]; then
-                    echo "  ERROR: No JSON sidecar found at ${BOLD_JSON}"
+                if [[ -z "$BOLD_JSON" ]]; then
+                    echo "  ERROR: No JSON sidecar found — cannot run FIACH"
                     exit 1
                 fi
-                export BOLD_JSON
 
                 MEAN_SRC="${PREPROC_DIR}/mc/meanFunctional_${RUN_NAME}.nii.gz"
                 [[ ! -f "$MEAN_SRC" ]] && \
