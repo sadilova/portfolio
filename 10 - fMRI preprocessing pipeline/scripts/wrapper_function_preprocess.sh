@@ -287,9 +287,13 @@ for SUB in "${SUBS[@]}"; do
 
             if [ "$run_NORDIC" = true ]; then
                 echo "  Step 1: Running NORDIC..."
-                run_or_die 1 "NORDIC" \
-                    matlab -nosplash -batch \
-                        "cd('${sDIR}'); AS1_NIFTI_NORDIC('${DIR}','${SUB}','${RUN_LABEL}');"
+                TMP_M="${NORDIC_DIR}/run_nordic_${RUN_LABEL}.m"
+                cat > "${TMP_M}" << MATLAB_EOF
+cd('${sDIR}');
+AS1_NIFTI_NORDIC('${DIR}', '${SUB}', '${RUN_LABEL}');
+MATLAB_EOF
+                run_or_die 1 "NORDIC" bash -c \
+                    "matlab -nosplash -batch \"run('${TMP_M}');\" && rm -f '${TMP_M}'"
             else
                 echo "  Step 1: NORDIC [disabled by flag] — using raw bold"
                 mark_done 1
@@ -305,6 +309,14 @@ for SUB in "${SUBS[@]}"; do
             echo "  Step 2: Motion correction..."
             run_or_die 2 "Motion correction" \
                 bash ${sDIR}AS2_realign_mcflirt_fsl.sh
+            # Verify output was actually created (AS2 can exit 0 on mcflirt failure)
+            OUTDIR="${DIR}derivatives/${SUB}/preproc/mc/"
+            if [[ ! -f "${OUTDIR}${mc_file}_mcf.nii.gz" ]]; then
+                echo "  ERROR: Step 2 — mcf output missing despite exit 0. Check AS2 logs."
+                echo "         Rerun with RESTART_FROM_STEP=2"
+                rm -f "$(_ckpt_dir)/step_2.done"
+                exit 1
+            fi
         fi
 
         # -------------------------------------------------------
@@ -407,6 +419,10 @@ for SUB in "${SUBS[@]}"; do
                 echo "  Step 7: Combine regressors [SKIP]"
             else
                 echo "  Step 7: Combine motion + FIACH regressors..."
+                # mcflirt always writes <mc_file>_mcf.par — export explicitly so AS7
+                # doesn't have to derive it (and end up with sc prefix or double _mcf)
+                MOTION_PAR="${DIR}derivatives/${SUB}/preproc/mc/${mc_file}_mcf.par"
+                export MOTION_PAR
                 run_or_die 7 "Combine regressors" \
                     bash ${sDIR}AS7_combine_motion_regs_NORfi.sh
             fi
@@ -461,9 +477,7 @@ for SUB in "${SUBS[@]}"; do
         fi
 
         # --- Export pipeline variables for downstream QC ---
-        STATS_DIR="${DIR}derivatives/${SUB}/stats"
-        mkdir -p "${STATS_DIR}"
-        ENV_FILE="${STATS_DIR}/pipeline_vars_${RUN_LABEL}.env"
+        ENV_FILE="${DIR}derivatives/${SUB}/stats/pipeline_vars_${RUN_LABEL}.env"
         {
             echo "SUB=${SUB}"
             echo "DIR=${DIR}"

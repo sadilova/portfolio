@@ -1,0 +1,6 @@
+nibabel
+antspyx
+antspynet
+scipy
+numpy
+pathlib
