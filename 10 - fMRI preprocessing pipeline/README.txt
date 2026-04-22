@@ -32,6 +32,8 @@ This can be found at the top of the wrapper function:
     (only spike interpolated), however as written in AS6, both can be applied via cfg settings
     (For more info, look at AS6)
 
+5. Make sure to add your personal FreeSurfer licence! https://surfer.nmr.mgh.harvard.edu/fswiki/License 
+
 
 Make sure that all .sh files have been made executable (chmod +x) - this is included in the wrapper function
 
