@@ -31,12 +31,18 @@ TARGET_RUN=""
 #   4  Slice timing             10  Smoothing
 #   5  Brain mask               11  tSNR maps
 #   6  FIACH
-RESTART_FROM_STEP=0
+RESTART_FROM_STEP=8
 
 # --- Environment ---
 export FSLDIR=$HOME/fsl
 source $FSLDIR/etc/fslconf/fsl.sh
 export PATH=$FSLDIR/bin:$PATH
+
+export FREESURFER_HOME=${FREESURFER_HOME:-/usr/local/freesurfer/8.2.0}
+source "${FREESURFER_HOME}/SetUpFreeSurfer.sh"
+export FS_LICENSE=/data/Annie/PROJECTS/scripts/.license
+
+
 
 DIR=$(cat 1_directory.txt)
 export DIR
@@ -349,8 +355,8 @@ for SUB in "${SUBS[@]}"; do
                 echo "  Step 1: Running NORDIC..."
                 TMP_M="${NORDIC_DIR}/run_nordic_${RUN_NAME}.m"
                 cat > "${TMP_M}" << MATLAB_EOF
-cd('${sDIR}');
-AS1_NIFTI_NORDIC('${DIR}', '${SUB}', '${RUN_NAME}', '${PREPROC_DIR}');
+                    cd('${sDIR}');
+                    AS1_NIFTI_NORDIC('${DIR}', '${SUB}', '${RUN_NAME}', '${PREPROC_DIR}');
 MATLAB_EOF
                 run_or_die 1 "NORDIC" bash -c \
                     "matlab -nosplash -batch \"run('${TMP_M}');\" && rm -f '${TMP_M}'"
@@ -418,21 +424,41 @@ MATLAB_EOF
         fi
 
         # -------------------------------------------------------
-        # STEP 5: Brain mask (T1)
-        # T1 is shared across caps — skip extraction if already done,
-        # but always re-register mask to EPI space for this run.
+        # STEP 5: Brain mask + segmentation (SynthSeg)
+        # T1 is shared across caps — skip if already done.
         # -------------------------------------------------------
         if step_done 5; then
-            echo "  Step 5: Brain mask [SKIP]"
+            echo "  Step 5: Brain mask/SynthSeg [SKIP]"
         else
             T1_SRC=$(ls "${DIR}${SUB}/anat/"*T1w.nii.gz 2>/dev/null | head -n 1)
             if [[ ! -f "$T1_SRC" ]]; then
                 echo "  ERROR: No T1w.nii.gz found for ${SUB} — cannot continue"
                 exit 1
             fi
-            echo "  Step 5: Brain mask..."
-            run_or_die 5 "Brain mask" bash -c "
-                gunzip -c '${T1_SRC}' > '${T1_DIR}/UNI_T1.nii' \
+
+            SYNTHSEG_DIR="${T1_DIR}/synthseg"
+            mkdir -p "${SYNTHSEG_DIR}"
+
+            echo "  Step 5: Copying T1..."
+            gunzip -c "${T1_SRC}" > "${T1_DIR}/UNI_T1.nii"
+
+            echo "  Step 5: Running SynthSeg + brain mask..."
+            run_or_die 5 "SynthSeg + brain mask" bash -c "
+                mri_synthseg \
+                    --i '${T1_DIR}/UNI_T1.nii' \
+                    --o '${SYNTHSEG_DIR}/synthseg.nii.gz' \
+                    --robust \
+                    --vol '${SYNTHSEG_DIR}/volumes.csv' \
+                    --qc  '${SYNTHSEG_DIR}/qc.csv' \
+                    --threads 8 \
+                && mri_binarize \
+                    --i '${SYNTHSEG_DIR}/synthseg.nii.gz' \
+                    --min 1 \
+                    --o '${SYNTHSEG_DIR}/brain_mask.nii.gz' \
+                && mri_mask \
+                    '${T1_DIR}/UNI_T1.nii' \
+                    '${SYNTHSEG_DIR}/brain_mask.nii.gz' \
+                    '${T1_DIR}/Masked_UNI.nii' \
                 && python3 ${sDIR}AS5_maskbrain_ants.py
             "
         fi
@@ -486,47 +512,40 @@ MATLAB_EOF
         fi
 
         # -------------------------------------------------------
-        # STEP 8: Co-registration
+        # STEP 8+9: Co-registration (EPI→T1) and Normalisation (EPI→MNI)
+        #   Run as one script — single interpolation per output,
+        #   both reg and norm saved. Checkpoints 8 and 9 both marked on success.
         # -------------------------------------------------------
-        if step_done 8; then
-            echo "  Step 8: Co-registration [SKIP]"
+        if step_done 8 && step_done 9; then
+            echo "  Steps 8+9: Registration + Normalisation [SKIP]"
         else
-            echo "  Step 8: Co-registration..."
-            run_or_die 8 "Co-registration" \
-                python3 ${sDIR}AS8_coreg_func-T1.py
-        fi
-
-        # -------------------------------------------------------
-        # STEP 9: Normalisation to MNI  (Step 8b in pipeline)
-        # -------------------------------------------------------
-        if step_done 9; then
-            echo "  Step 8b: Normalisation [SKIP]"
-        else
-            echo "  Step 8b: Normalisation..."
-            run_or_die 9 "Normalisation" \
-                python3 ${sDIR}AS8b_reg_func-t1-mni.py
+            echo "  Steps 8+9: Registration + Normalisation..."
+            run_or_die 8 "Registration+Normalisation" \
+                python3 ${sDIR}AS8_coreg_and_norm.py
+            # Mark step 9 done too since both outputs are produced together
+            mark_done 9
         fi
 
         # -------------------------------------------------------
         # STEP 10: Smoothing
         # -------------------------------------------------------
         if step_done 10; then
-            echo "  Step 9: Smoothing [SKIP]"
+            echo "  Step 10: Smoothing [SKIP]"
         else
-            echo "  Step 9: Smoothing ${smooth_file}..."
+            echo "  Step 10: Smoothing ${smooth_file}..."
             run_or_die 10 "Smoothing" \
-                bash ${sDIR}AS9_smoothing.sh
+                bash ${sDIR}AS10_smoothing.sh
         fi
 
         # -------------------------------------------------------
         # STEP 11: tSNR maps
         # -------------------------------------------------------
         if step_done 11; then
-            echo "  Step 10: tSNR [SKIP]"
+            echo "  Step 11: tSNR [SKIP]"
         else
-            echo "  Step 10: tSNR maps..."
+            echo "  Step 11: tSNR maps..."
             run_or_die 11 "tSNR" \
-                bash ${sDIR}AS10_tsnr_maps.sh
+                bash ${sDIR}AS11_tsnr_maps.sh
         fi
 
         # --- Export pipeline variables on run completion ---

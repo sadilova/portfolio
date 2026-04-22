@@ -4,3 +4,4 @@ antspynet
 scipy
 numpy
 pathlib
+nitransforms

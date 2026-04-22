@@ -51,9 +51,10 @@ cd('${FIACH_DIR}');
 run_fiach('${fiach_file}.nii', 'meanFunctional.nii', 'rfBrainMask.nii', cfg);
 MATLAB_EOF
 
+LOG_FILE="${FIACH_DIR}/fiach_log_${RUN_NAME}.txt"
 echo "Running MATLAB script: ${TMP_M}"
-matlab -nosplash -batch "run('${TMP_M}');"
-MATLAB_EXIT=$?
+matlab -nosplash -batch "run('${TMP_M}');" 2>&1 | tee "${LOG_FILE}"
+MATLAB_EXIT=${PIPESTATUS[0]}
 
 if [ ${MATLAB_EXIT} -ne 0 ]; then
     echo "ERROR: MATLAB exited with code ${MATLAB_EXIT} during FIACH"
