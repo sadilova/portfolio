@@ -31,7 +31,7 @@ TARGET_RUN=""
 #   4  Slice timing             10  Smoothing
 #   5  Brain mask               11  tSNR maps
 #   6  FIACH
-RESTART_FROM_STEP=8
+RESTART_FROM_STEP=0
 
 # --- Environment ---
 export FSLDIR=$HOME/fsl
