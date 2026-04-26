@@ -16,7 +16,12 @@ files=(
 )
 
 # --- Masks ---
-mask_epi="${PREPROC_DIR}/FIACH/rfBrainMask.nii"
+mask_epi="${PREPROC_DIR}/FIACH/rfBrainMask_${RUN_NAME}.nii"
+if [ ! -f "${mask_epi}" ]; then
+    echo "ERROR: EPI brain mask not found: ${mask_epi}"
+    exit 1
+fi
+echo "  Using EPI mask: ${mask_epi}"
 mask_t1="${extDIR}derivatives/${SUB}/preproc/T1/Masked_UNI.nii"
 mask_mni="/home/asa25/fsl/data/standard/MNI152_T1_1mm_brain_mask.nii.gz"
 

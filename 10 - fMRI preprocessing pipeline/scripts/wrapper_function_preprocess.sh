@@ -8,15 +8,16 @@
 run_NORDIC=true
 run_FIACH=true
 MNI_space=true
-SLICE_TIMING=false
+SLICE_TIMING=true
+FWHM_MM=3   # smoothing kernel in mm (converted to sigma for fslmaths)
 
 # --- Selective processing ---
 # Leave empty ("") to process everything, or set to filter:
-#   TARGET_SUB="sub-01"   → only that subject
-#   TARGET_CAP="cap2"     → only that subfolder (use "" to target direct-in-func files)
-#   TARGET_RUN="run1"     → only that run name (as derived after stripping sub-XX_ prefix)
+#   TARGET_SUB="sub-01"      → only that subject
+#   TARGET_CONDITION="cap2"  → only that subfolder (use "" to target direct-in-func files)
+#   TARGET_RUN="run1"        → only that run name (as derived after stripping sub-XX_ prefix)
 TARGET_SUB=""
-TARGET_CAP=""
+TARGET_CONDITION=""
 TARGET_RUN=""
 
 # --- Restart / breakpoint control ---
@@ -26,10 +27,11 @@ TARGET_RUN=""
 #
 # Step reference:
 #   1  NORDIC                    7  Combine regressors
-#   2  Motion correction         8  Co-registration
-#   3  Unwarping / mean func     9  Normalisation (8b)
+#   2  Motion correction         8  Co-registration + Normalisation
+#   3  Unwarping / mean func     9  (marked done with step 8)
 #   4  Slice timing             10  Smoothing
-#   5  Brain mask               11  tSNR maps
+#   5  SynthSeg + T1 mask       11  tSNR maps
+#   5b Mask → EPI space         12  QC report
 #   6  FIACH
 RESTART_FROM_STEP=0
 
@@ -41,8 +43,6 @@ export PATH=$FSLDIR/bin:$PATH
 export FREESURFER_HOME=${FREESURFER_HOME:-/usr/local/freesurfer/8.2.0}
 source "${FREESURFER_HOME}/SetUpFreeSurfer.sh"
 export FS_LICENSE=/data/Annie/PROJECTS/scripts/.license
-
-
 
 DIR=$(cat 1_directory.txt)
 export DIR
@@ -59,7 +59,7 @@ echo "Starting preprocessing pipeline"
 echo "  Directory : ${DIR}"
 echo "  Subjects  : ${SUBS[*]}"
 [[ -n "$TARGET_SUB" ]] && echo "  Filter SUB: ${TARGET_SUB}"
-[[ -n "$TARGET_CAP" ]] && echo "  Filter CAP: ${TARGET_CAP}"
+[[ -n "$TARGET_CONDITION" ]] && echo "  Filter CONDITION: ${TARGET_CONDITION}"
 [[ -n "$TARGET_RUN" ]] && echo "  Filter RUN: ${TARGET_RUN}"
 [[ "$RESTART_FROM_STEP" -gt 0 ]] && echo "  Restart   : from step ${RESTART_FROM_STEP}"
 echo "============================================"
@@ -150,7 +150,8 @@ clear_from_step() {
     local from="${1}" cdir
     cdir=$(_ckpt_dir)
     mkdir -p "${cdir}"
-    for i in $(seq "${from}" 11); do
+    [[ "$from" -le 5 ]] && rm -f "${cdir}/step_5b.done"
+    for i in $(seq "${from}" 12); do
         rm -f "${cdir}/step_${i}.done"
     done
     echo "  Checkpoints cleared from step ${from} onward (${SUB}/${RUN_LABEL})"
@@ -212,8 +213,8 @@ for SUB in "${SUBS[@]}"; do
         export BOLD_SRC CAP_NAME RUN_NAME RUN_LABEL
 
         # --- Cap filter ---
-        if [[ -n "$TARGET_CAP" && "$CAP_NAME" != "$TARGET_CAP" ]]; then
-            echo "  Skipping ${RUN_LABEL} (TARGET_CAP=${TARGET_CAP})"
+        if [[ -n "$TARGET_CONDITION" && "$CAP_NAME" != "$TARGET_CONDITION" ]]; then
+            echo "  Skipping ${RUN_LABEL} (TARGET_CONDITION=${TARGET_CONDITION})"
             continue
         fi
 
@@ -249,16 +250,16 @@ for SUB in "${SUBS[@]}"; do
         T1_DIR="${DIR}derivatives/${SUB}/preproc/T1"
         export PREPROC_DIR T1_DIR
 
-        # Create all cap-specific subfolders for this run
+        # Create cap-specific subfolders — only for steps that will run
         mkdir -p "${PREPROC_DIR}/mc" \
-                 "${PREPROC_DIR}/NORDIC" \
                  "${PREPROC_DIR}/FIACH" \
-                 "${PREPROC_DIR}/fmap" \
                  "${PREPROC_DIR}/reg" \
                  "${PREPROC_DIR}/smooth" \
                  "${PREPROC_DIR}/tsnr" \
-                 "${PREPROC_DIR}/slicecor" \
                  "${T1_DIR}"
+        [ "$run_NORDIC" = true ]   && mkdir -p "${PREPROC_DIR}/NORDIC"
+        [ "$SLICE_TIMING" = true ] && mkdir -p "${PREPROC_DIR}/slicecor"
+        [ -n "${FMAP_DIR}" ]       && mkdir -p "${PREPROC_DIR}/fmap"
 
         echo "  Preproc dir: ${PREPROC_DIR}"
 
@@ -273,11 +274,9 @@ for SUB in "${SUBS[@]}"; do
 
         if [[ -n "$CAP_NAME" ]]; then
             if [ -d "${DIR}${SUB}/fmap/${CAP_NAME}/" ]; then
-                # Cap-specific fmap subfolder exists
                 FMAP_DIR="${DIR}${SUB}/fmap/${CAP_NAME}/"
                 echo "  fmap: fmap/${CAP_NAME}/"
             elif [ -z "${FMAP_HAS_CAPS}" ] && [ -d "${DIR}${SUB}/fmap/" ]; then
-                # fmap has no subfolders — use it for all caps
                 FMAP_DIR="${DIR}${SUB}/fmap/"
                 echo "  fmap: fmap/ (shared, no cap subfolders in fmap)"
             else
@@ -338,6 +337,27 @@ for SUB in "${SUBS[@]}"; do
             echo "  JSON: ${BOLD_JSON}"
         fi
         export BOLD_JSON
+
+        # --- Export pipeline variables at start of run ---
+        ENV_FILE="${DIR}derivatives/${SUB}/stats/pipeline_vars_${RUN_LABEL}.env"
+        mkdir -p "${DIR}derivatives/${SUB}/stats"
+        {
+            echo "SUB=${SUB}"
+            echo "DIR=${DIR}"
+            echo "CAP_NAME=${CAP_NAME}"
+            echo "RUN_NAME=${RUN_NAME}"
+            echo "RUN_LABEL=${RUN_LABEL}"
+            echo "BOLD_SRC=${BOLD_SRC}"
+            echo "FMAP_DIR=${FMAP_DIR}"
+            echo "PREPROC_DIR=${PREPROC_DIR}"
+            echo "T1_DIR=${T1_DIR}"
+            echo "mc_file=${mc_file}"
+            echo "sc_file=${sc_file}"
+            echo "fiach_file=${fiach_file}"
+            echo "reg_file=${reg_file}"
+            echo "smooth_file=${smooth_file}"
+        } > "${ENV_FILE}"
+        echo "  Vars written: ${ENV_FILE}"
 
         # -------------------------------------------------------
         # STEP 1: Copy bold to NORDIC folder; apply NORDIC if enabled
@@ -424,11 +444,17 @@ MATLAB_EOF
         fi
 
         # -------------------------------------------------------
-        # STEP 5: Brain mask + segmentation (SynthSeg)
-        # T1 is shared across caps — skip if already done.
+        # STEP 5: Brain mask + segmentation (SynthSeg) — subject-level once
         # -------------------------------------------------------
-        if step_done 5; then
-            echo "  Step 5: Brain mask/SynthSeg [SKIP]"
+        T1_CKPT="${DIR}derivatives/${SUB}/preproc/T1/.synthseg.done"
+
+        if [[ "$RESTART_FROM_STEP" -gt 0 && "$RESTART_FROM_STEP" -le 5 ]]; then
+            rm -f "${T1_CKPT}"
+            rm -f "$(_ckpt_dir)/step_5b.done"
+        fi
+
+        if [[ -f "$T1_CKPT" ]]; then
+            echo "  Step 5: Brain mask/SynthSeg [SKIP — already done for ${SUB}]"
         else
             T1_SRC=$(ls "${DIR}${SUB}/anat/"*T1w.nii.gz 2>/dev/null | head -n 1)
             if [[ ! -f "$T1_SRC" ]]; then
@@ -442,8 +468,8 @@ MATLAB_EOF
             echo "  Step 5: Copying T1..."
             gunzip -c "${T1_SRC}" > "${T1_DIR}/UNI_T1.nii"
 
-            echo "  Step 5: Running SynthSeg + brain mask..."
-            run_or_die 5 "SynthSeg + brain mask" bash -c "
+            echo "  Step 5: Running SynthSeg + T1 brain mask..."
+            run_or_die 5 "SynthSeg + T1 mask" bash -c "
                 mri_synthseg \
                     --i '${T1_DIR}/UNI_T1.nii' \
                     --o '${SYNTHSEG_DIR}/synthseg.nii.gz' \
@@ -451,16 +477,21 @@ MATLAB_EOF
                     --vol '${SYNTHSEG_DIR}/volumes.csv' \
                     --qc  '${SYNTHSEG_DIR}/qc.csv' \
                     --threads 8 \
-                && mri_binarize \
-                    --i '${SYNTHSEG_DIR}/synthseg.nii.gz' \
-                    --min 1 \
-                    --o '${SYNTHSEG_DIR}/brain_mask.nii.gz' \
-                && mri_mask \
-                    '${T1_DIR}/UNI_T1.nii' \
-                    '${SYNTHSEG_DIR}/brain_mask.nii.gz' \
-                    '${T1_DIR}/Masked_UNI.nii' \
-                && python3 ${sDIR}AS5_maskbrain_ants.py
+                && python3 ${sDIR}AS5_T1mask.py \
+                && touch '${T1_CKPT}'
             "
+        fi
+        # Always mark run-level step 5 done so pipeline continues
+        step_done 5 || mark_done 5
+
+        # -------------------------------------------------------
+        # STEP 5b: Register T1 mask to this run's EPI space (run-level)
+        # -------------------------------------------------------
+        if [[ -f "$(_ckpt_dir)/step_5b.done" ]]; then
+            echo "  Step 5b: Mask → EPI space [SKIP]"
+        else
+            echo "  Step 5b: Registering brain mask to EPI space (${RUN_LABEL})..."
+            run_or_die 5b "Mask → EPI space" python3 ${sDIR}AS5b_mask_to_epi.py
         fi
 
         # -------------------------------------------------------
@@ -479,13 +510,13 @@ MATLAB_EOF
                 fi
 
                 MEAN_SRC="${PREPROC_DIR}/mc/meanFunctional_${RUN_NAME}.nii.gz"
-                [[ ! -f "$MEAN_SRC" ]] && \
-                    MEAN_SRC="${PREPROC_DIR}/mc/meanFunctional.nii.gz"
-                run_or_die 6 "FIACH" bash -c "
-                    gunzip -c '${MEAN_SRC}' \
-                        > ${PREPROC_DIR}/FIACH/meanFunctional.nii \
-                    && bash ${sDIR}AS6_call_FIACH.sh
-                "
+                if [[ ! -f "$MEAN_SRC" ]]; then
+                    echo "  ERROR: Mean functional not found: ${MEAN_SRC}"
+                    echo "         Check that Step 3 completed successfully."
+                    exit 1
+                fi
+
+                run_or_die 6 "FIACH" bash ${sDIR}AS6_call_FIACH.sh
 
                 RCLEAN="${PREPROC_DIR}/FIACH/rclean_${fiach_file}.nii"
                 if [[ ! -f "$RCLEAN" ]]; then
@@ -532,7 +563,8 @@ MATLAB_EOF
         if step_done 10; then
             echo "  Step 10: Smoothing [SKIP]"
         else
-            echo "  Step 10: Smoothing ${smooth_file}..."
+            echo "  Step 10: Smoothing ${smooth_file} (FWHM=${FWHM_MM}mm)..."
+            export FWHM_MM
             run_or_die 10 "Smoothing" \
                 bash ${sDIR}AS10_smoothing.sh
         fi
@@ -548,24 +580,16 @@ MATLAB_EOF
                 bash ${sDIR}AS11_tsnr_maps.sh
         fi
 
-        # --- Export pipeline variables on run completion ---
-        ENV_FILE="${DIR}derivatives/${SUB}/stats/pipeline_vars_${RUN_LABEL}.env"
-        {
-            echo "SUB=${SUB}"
-            echo "DIR=${DIR}"
-            echo "CAP_NAME=${CAP_NAME}"
-            echo "RUN_NAME=${RUN_NAME}"
-            echo "RUN_LABEL=${RUN_LABEL}"
-            echo "BOLD_SRC=${BOLD_SRC}"
-            echo "FMAP_DIR=${FMAP_DIR}"
-            echo "PREPROC_DIR=${PREPROC_DIR}"
-            echo "T1_DIR=${T1_DIR}"
-            echo "mc_file=${mc_file}"
-            echo "sc_file=${sc_file}"
-            echo "fiach_file=${fiach_file}"
-            echo "reg_file=${reg_file}"
-            echo "smooth_file=${smooth_file}"
-        } > "${ENV_FILE}"
+        # -------------------------------------------------------
+        # STEP 12: QC report
+        # -------------------------------------------------------
+        if step_done 12; then
+            echo "  Step 12: QC report [SKIP]"
+        else
+            echo "  Step 12: Generating QC report..."
+            run_or_die 12 "QC report" \
+                python3 ${sDIR}../preproc_qc.py ${SUB} ${RUN_LABEL}
+        fi
 
         echo "  Completed: ${SUB}/${RUN_LABEL}  (vars saved to ${ENV_FILE})"
 

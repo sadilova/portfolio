@@ -5,7 +5,12 @@ if [ -z "${SUB}" ];         then echo "ERROR: SUB not defined.";         exit 1;
 if [ -z "${smooth_file}" ]; then echo "ERROR: smooth_file not defined."; exit 1; fi
 if [ -z "${PREPROC_DIR}" ]; then echo "ERROR: PREPROC_DIR not defined."; exit 1; fi
 
-sigma=$(echo "scale=6; 3 / 2.3548" | bc)
+if [ -z "${FWHM_MM}" ]; then
+    echo "WARNING: FWHM_MM not set, using default of 6mm"
+    FWHM_MM=6
+fi
+sigma=$(echo "scale=6; ${FWHM_MM} / 2.3548" | bc)
+echo "  FWHM: ${FWHM_MM}mm  →  sigma: ${sigma}"
 
 # Input may be .nii or .nii.gz
 INPUT_NII="${PREPROC_DIR}/reg/${smooth_file}.nii"

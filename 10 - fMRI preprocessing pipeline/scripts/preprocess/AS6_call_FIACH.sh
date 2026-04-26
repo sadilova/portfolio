@@ -48,7 +48,7 @@ cfg.debug         = true;
 cfg.do_hpf        = ${HPF};
 cfg.do_regression = ${REGRESS};
 cd('${FIACH_DIR}');
-run_fiach('${fiach_file}.nii', 'meanFunctional.nii', 'rfBrainMask.nii', cfg);
+run_fiach('${fiach_file}.nii', 'meanFunctional_${RUN_NAME}.nii', 'rfBrainMask_${RUN_NAME}.nii', cfg);
 MATLAB_EOF
 
 LOG_FILE="${FIACH_DIR}/fiach_log_${RUN_NAME}.txt"

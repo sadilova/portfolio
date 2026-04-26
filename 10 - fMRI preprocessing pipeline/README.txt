@@ -1,6 +1,6 @@
 Purpose: fMRI preprocessing with NORDIC and FIACH
 Author: Anna Sadilova
-Date: Last updated 21.4.2026
+Date: Last updated 26.4.2026
 
 Organisation:
 Place scripts into your projects folder - can call on all project data from here
@@ -15,6 +15,13 @@ This can be found at the top of the wrapper function:
     run_FIACH=true
     MNI_space=false
     slice_timing=true
+    
+    
+------------------------------
+BEFORE RUNNING THE FIRST TIME:
+------------------------------
+This pipeline draws from many different softwares that need to be downloaded - FreeSurfer, FSL, AFNI, Matlab, SPM, ANTS 
+     (ants should be automatically downloaded as a python package, so that shouldn't be an issue)
 
 
 
@@ -26,14 +33,23 @@ This can be found at the top of the wrapper function:
 2. Check that all subjects are in a list in 1_subjects.txt
 
 3. If fmap folder is not present, unwarping won't run - fmap needs e1 and e2 phase files!!! 
-	Else it will give errors
+    Else it will give errors
 
 4. Currently, FIACH is set to output rclean as a non-regressed, non-highpassed dataset
     (only spike interpolated), however as written in AS6, both can be applied via cfg settings
     (For more info, look at AS6)
 
+5. You need to input your own licence into .licence (licence for FreeSurfer used for Synthseg) 
+    - this can be found here: https://surfer.nmr.mgh.harvard.edu/fswiki/License
 
-Make sure that all .sh files have been made executable (chmod +x) - this is included in the wrapper function
+6. It is worth testing out rfBrainMask beforehand - there is a rfBrainMask_test.ipnyb script for 
+    this, sometimes the alignment to meanFunctional fails (easy fix is to set a random_seed in
+    registration, but this might need some optimisation - 100 worked for my participants)
+    
+
+
+Make sure that all .sh files have been made executable (chmod +x) - this is included in the wrapper function but needs to be done for wrapper function itself
+
 
 
 

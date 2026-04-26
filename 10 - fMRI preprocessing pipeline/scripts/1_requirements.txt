@@ -3,5 +3,7 @@ antspyx
 antspynet
 scipy
 numpy
-pathlib
 nitransforms
+pandas
+nilearn
+python-dotenv
