@@ -3,7 +3,8 @@ antspyx
 antspynet
 scipy
 numpy
-nitransforms
 pandas
 nilearn
 python-dotenv
+nitransforms==24.1.1
+niworkflows
