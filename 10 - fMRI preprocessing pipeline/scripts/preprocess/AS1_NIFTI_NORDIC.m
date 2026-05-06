@@ -1,4 +1,4 @@
-function AS1_NIFTI_NORDIC(extDIR, SUB, RUN_NAME, PREPROC_DIR, fn_magn_in, fn_phase_in, fn_out, ARG)
+function AS1_NIFTI_NORDIC(extDIR, SUB, RUN_LABEL, PREPROC_DIR, fn_magn_in, fn_phase_in, fn_out, ARG)
     if nargin < 8
         if nargin < 1 || isempty(extDIR)
             error('extDIR not defined. Please pass from the wrapper.');
@@ -6,8 +6,8 @@ function AS1_NIFTI_NORDIC(extDIR, SUB, RUN_NAME, PREPROC_DIR, fn_magn_in, fn_pha
         if nargin < 2 || isempty(SUB)
             error('SUB not defined. Please pass from the wrapper.');
         end
-        if nargin < 3 || isempty(RUN_NAME)
-            RUN_NAME = '';
+        if nargin < 3 || isempty(RUN_LABEL)
+            RUN_LABEL = '';
         end
         if nargin < 4 || isempty(PREPROC_DIR)
             % Fallback: flat preproc structure (no cap subfolders)
@@ -18,10 +18,10 @@ function AS1_NIFTI_NORDIC(extDIR, SUB, RUN_NAME, PREPROC_DIR, fn_magn_in, fn_pha
         DIR = [PREPROC_DIR, '/NORDIC/'];
 
         % Input file: Run_BOLD_SUB_RUN_NAME.nii (copied by wrapper before calling NORDIC)
-        if isempty(RUN_NAME)
+        if isempty(RUN_LABEL)
             fn_magn_in = [DIR, 'Run_BOLD_', SUB, '.nii'];
         else
-            fn_magn_in = [DIR, 'Run_BOLD_', SUB, '_', RUN_NAME, '.nii'];
+            fn_magn_in = [DIR, 'Run_BOLD_', SUB, '_', RUN_LABEL, '.nii'];
         end
 
         fn_phase_in = 'dummy_phase.nii';
